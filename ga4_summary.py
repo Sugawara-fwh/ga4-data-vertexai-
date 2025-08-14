@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=None, max_workers=3):
+def fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=None, lp_paths=None, max_workers=3):
     """
     GA4事前集計データを並列取得する
     
@@ -28,6 +28,7 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
         end_date: 終了日
         cv_events: コンバージョンイベント（/区切り）
         path_filter: ページパスフィルター（例: "/products/"）
+        lp_paths: 特定のLPパスリスト（例: ["/entry04/", "/entry05/", "/entry06/"]）
         max_workers: 並列実行数
     
     Returns:
@@ -47,6 +48,13 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
         create_cv_device_summary_request(property_id, start_date, end_date, cv_events),
         create_cv_hour_summary_request(property_id, start_date, end_date, cv_events),
     ]
+    
+    # LP集計リクエストを追加
+    lp_requests = []
+    if lp_paths:
+        for lp_path in lp_paths:
+            lp_requests.extend(create_lp_summary_request(property_id, start_date, end_date, lp_path, cv_events))
+        summary_requests.extend(lp_requests)
     
     # 並列実行
     summary_responses = execute_summary_requests_parallel(client, summary_requests, max_workers)
@@ -78,6 +86,16 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
     cv_responses = summary_responses[5:9]  # ページ、メディア、デバイス、時間帯
     conversion_summary = process_conversion_summary(cv_responses, cv_events)
     
+    # LP集計データ処理
+    lp_summary = {}
+    if lp_paths:
+        lp_responses = summary_responses[9:9+len(lp_requests)]  # LP集計レスポンス
+        for i, lp_path in enumerate(lp_paths):
+            start_idx = i * 2  # 各LPは2つのリクエスト（基本指標 + コンバージョン）
+            if start_idx + 1 < len(lp_responses):
+                lp_data = [lp_responses[start_idx], lp_responses[start_idx + 1]]
+                lp_summary[lp_path] = process_lp_summary(lp_data, cv_events)
+    
     logger.info("集計データの処理完了")
     
     return {
@@ -86,7 +104,8 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
         "by_source": source_summary,
         "by_device": device_summary,
         "by_user_type": user_type_summary,
-        "conversions": conversion_summary
+        "conversions": conversion_summary,
+        "by_lp": lp_summary
     }
 
 def create_site_summary_request(property_id, start_date, end_date):
@@ -341,6 +360,78 @@ def create_cv_hour_summary_request(property_id, start_date, end_date, cv_events)
         order_bys=[{"dimension": {"dimension_name": "hour"}}]
     )
 
+def create_lp_summary_request(property_id, start_date, end_date, lp_path, cv_events):
+    """特定のLPパスの集計リクエストを生成（PV・セッション・CVを含む）"""
+    
+    # 1. LPの基本指標（PV・セッション・ユーザー数など）を取得するリクエスト
+    lp_basic_request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimensions=[Dimension(name="pagePath")],
+        metrics=[
+            Metric(name="screenPageViews"),
+            Metric(name="totalUsers"),
+            Metric(name="sessions"),
+            Metric(name="engagementRate"),
+            Metric(name="averageSessionDuration"),
+            Metric(name="bounceRate"),
+        ],
+        dimension_filter=FilterExpression(
+            filter=Filter(
+                field_name='pagePath',
+                string_filter=Filter.StringFilter(value=lp_path, match_type=Filter.StringFilter.MatchType.EXACT)
+            )
+        )
+    )
+    
+    # 2. LPのコンバージョン数を取得するリクエスト
+    event_names = cv_events.split('/')
+    
+    # イベントフィルターの構築
+    if len(event_names) == 1:
+        event_filter = FilterExpression(
+            filter=Filter(
+                field_name='eventName',
+                string_filter=Filter.StringFilter(value=event_names[0], match_type=Filter.StringFilter.MatchType.EXACT)
+            )
+        )
+    else:
+        filter_expressions = []
+        for event_name in event_names:
+            filter_expressions.append(FilterExpression(
+                filter=Filter(
+                    field_name='eventName',
+                    string_filter=Filter.StringFilter(value=event_name.strip(), match_type=Filter.StringFilter.MatchType.EXACT)
+                )
+            ))
+        event_filter = FilterExpression(or_group=FilterExpressionList(expressions=filter_expressions))
+    
+    # pathフィルターを追加
+    path_filter_expr = FilterExpression(
+        filter=Filter(
+            field_name='pagePath',
+            string_filter=Filter.StringFilter(value=lp_path, match_type=Filter.StringFilter.MatchType.EXACT)
+        )
+    )
+    final_filter = FilterExpression(
+        and_group=FilterExpressionList(expressions=[event_filter, path_filter_expr])
+    )
+    
+    lp_cv_request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimensions=[
+            Dimension(name="pagePath"),
+            Dimension(name="eventName"),
+        ],
+        metrics=[Metric(name="eventCount")],
+        dimension_filter=final_filter,
+        order_bys=[{"metric": {"metric_name": "eventCount"}, "desc": True}],
+        limit=20
+    )
+    
+    return [lp_basic_request, lp_cv_request]
+
 def process_site_summary(response):
     """サイト全体集計レスポンスを処理"""
     if not response.rows:
@@ -447,6 +538,51 @@ def process_conversion_summary(responses, cv_events):
         "by_source": by_source,
         "by_device": by_device,
         "by_hour": by_hour
+    }
+
+def process_lp_summary(responses, cv_events):
+    """特定のLPパスの集計レスポンスを処理（基本指標とコンバージョンを含む）"""
+    if not responses or len(responses) < 2:
+        return {}
+    
+    basic_response = responses[0]
+    cv_response = responses[1]
+    
+    # 基本指標の処理
+    basic_metrics = {}
+    if basic_response and basic_response.rows:
+        row = basic_response.rows[0]
+        basic_metrics = {
+            "page_views": int(row.metric_values[0].value) if row.metric_values[0].value else 0,
+            "users": int(row.metric_values[1].value) if row.metric_values[1].value else 0,
+            "sessions": int(row.metric_values[2].value) if row.metric_values[2].value else 0,
+            "engagement_rate": float(row.metric_values[3].value) if row.metric_values[3].value else 0.0,
+            "avg_session_duration": float(row.metric_values[4].value) if row.metric_values[4].value else 0.0,
+            "bounce_rate": float(row.metric_values[5].value) if row.metric_values[5].value else 0.0,
+        }
+    
+    # コンバージョンの処理
+    event_names = cv_events.split('/')
+    total_by_event = {event.strip(): 0 for event in event_names}
+    
+    if cv_response and cv_response.rows:
+        for row in cv_response.rows:
+            event_name = row.dimension_values[1].value
+            count = int(row.metric_values[0].value) if row.metric_values[0].value else 0
+            if event_name in total_by_event:
+                total_by_event[event_name] += count
+    
+    # コンバージョン率の計算
+    conversion_rate = 0.0
+    total_conversions = sum(total_by_event.values())
+    if basic_metrics.get("sessions", 0) > 0:
+        conversion_rate = (total_conversions / basic_metrics["sessions"]) * 100
+    
+    return {
+        "basic_metrics": basic_metrics,
+        "conversions": total_by_event,
+        "total_conversions": total_conversions,
+        "conversion_rate": round(conversion_rate, 2)
     }
 
 def process_cv_dimension_data(response, dimension_key, event_names):
