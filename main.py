@@ -1035,9 +1035,30 @@ def fetch_ga4_data(property_id: str, start_date: str, end_date: str, cv_events: 
         
         logger.info(f"Sending request to GA4 API for property_id: {property_id}")
         
+        # --- 修正版 start ---
+        # path_filterが指定されている場合はカンマ区切りで分割し、EXACT一致でフィルタする
+        if path_filter:
+            path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
+        else:
+            path_list = None
+
+       # 集計データの取得（lp_pathsは廃止してpath_filterをそのまま使う）
+       summary_data = fetch_summary_data(
+           client,
+           property_id,
+           start_date,
+           end_date,
+           cv_events,
+           path_filter=path_filter
+       )
+      logger.info("集計データの処理完了")
+      # --- 修正版 end ---
+
+        
         # 事前集計データの取得
         logger.info("事前集計データの取得を開始...")
-        
+
+        """
         # LPパスの抽出（path_filterから特定のLPパスを抽出）
         lp_paths = None
         if path_filter:
@@ -1048,8 +1069,9 @@ def fetch_ga4_data(property_id: str, start_date: str, end_date: str, cv_events: 
             if lp_paths:
                 logger.info(f"LP集計対象パス: {lp_paths}")
         
-        summary_data = fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=path_filter, lp_paths=lp_paths)
+        summary_data = fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=path_filter)
         logger.info("集計データの処理完了")
+        """
         
         # データ行数の制限を設定
         logger.info(f"GA4データ取得行数制限: {row_limit}行")
@@ -1349,3 +1371,4 @@ def parse_query_params(url):
 #google-cloud-aiplatform
 #vertexai
 #tiktoken==0.5.2
+
