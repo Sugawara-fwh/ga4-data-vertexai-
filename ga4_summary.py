@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=None, lp_paths=None, max_workers=3):
+def fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=None, max_workers=3):
     """
     GA4事前集計データを並列取得する
     
@@ -48,13 +48,23 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
         create_cv_device_summary_request(property_id, start_date, end_date, cv_events),
         create_cv_hour_summary_request(property_id, start_date, end_date, cv_events),
     ]
-    
+
+    # path_filterが指定されている場合、各パスの個別詳細も追加取得
+    if path_filter:
+        path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
+        for path in path_list[:10]:  # 必要に応じて20まで増やせる
+            summary_requests.append(
+                create_single_page_detail_request(property_id, start_date, end_date, path, cv_events)
+            )
+
+    """
     # LP集計リクエストを追加
     lp_requests = []
     if lp_paths:
         for lp_path in lp_paths:
             lp_requests.extend(create_lp_summary_request(property_id, start_date, end_date, lp_path, cv_events))
         summary_requests.extend(lp_requests)
+    """
     
     # 並列実行
     summary_responses = execute_summary_requests_parallel(client, summary_requests, max_workers)
@@ -663,3 +673,4 @@ def execute_summary_requests_parallel(client, requests, max_workers=3):
     except Exception as e:
         logger.error(f"並列実行エラー: {str(e)}")
         return [None] * len(requests) 
+
