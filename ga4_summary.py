@@ -141,13 +141,37 @@ def create_page_summary_request(property_id, start_date, end_date, path_filter=N
     
     # pathフィルターの設定
     dimension_filter = None
-    if path_filter:
-        dimension_filter = FilterExpression(
-            filter=Filter(
-                field_name='pagePath',
-                string_filter=Filter.StringFilter(value=path_filter, match_type=Filter.StringFilter.MatchType.CONTAINS)
+    path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
+        
+        if len(path_list) == 1:
+            # 単一パス
+            dimension_filter = FilterExpression(
+                filter=Filter(
+                    field_name='pagePath',
+                    string_filter=Filter.StringFilter(
+                        value=path_list[0],
+                        match_type=Filter.StringFilter.MatchType.EXACT  # CONTAINSからEXACTに変更
+                        )
+                )
             )
-        )
+        else:
+            # 複数パス（OR条件）
+            filters = []
+            for path in path_list:
+                filters.append(FilterExpression(
+                    filter=Filter(
+                        field_name='pagePath',
+                        string_filter=Filter.StringFilter(
+                            value=path,
+                            match_type=Filter.StringFilter.MatchType.EXACT
+                        )
+                    )
+                ))
+            dimension_filter = FilterExpression(
+                or_group=FilterExpressionList(expressions=filters)
+            )
+
+                        
     
     return RunReportRequest(
         property=f"properties/{property_id}",
@@ -673,4 +697,5 @@ def execute_summary_requests_parallel(client, requests, max_workers=3):
     except Exception as e:
         logger.error(f"並列実行エラー: {str(e)}")
         return [None] * len(requests) 
+
 
