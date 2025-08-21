@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def fetch_summary_data(client, property_id, start_date, end_date, cv_events, path_filter=None, max_workers=3):
+def fetch_summary_data(client, property_id, start_date, end_date, cv_events, lp_paths=None, path_filter=None, max_workers=3):
     """
     GA4事前集計データを並列取得する
     
@@ -50,13 +50,14 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
     ]
 
     # path_filterが指定されている場合、各パスの個別詳細も追加取得
+    """ create_single_page_detail_request、以前スラックの説明のために適当につけた関数で、そのような関数は読んでいただくとわかると思うのですが実装されてないです
+    path_filterが指定されている場合,指定された特定の1ページに関する、詳細なデータを取得するためのリクエストを作成するような関数を追加すればいいという感じです
     if path_filter:
         path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
         for path in path_list[:10]:  # 必要に応じて20まで増やせる
             summary_requests.append(
                 create_single_page_detail_request(property_id, start_date, end_date, path, cv_events)
             )
-
     """
     # LP集計リクエストを追加
     lp_requests = []
@@ -64,7 +65,6 @@ def fetch_summary_data(client, property_id, start_date, end_date, cv_events, pat
         for lp_path in lp_paths:
             lp_requests.extend(create_lp_summary_request(property_id, start_date, end_date, lp_path, cv_events))
         summary_requests.extend(lp_requests)
-    """
     
     # 並列実行
     summary_responses = execute_summary_requests_parallel(client, summary_requests, max_workers)
@@ -141,8 +141,10 @@ def create_page_summary_request(property_id, start_date, end_date, path_filter=N
     
     # pathフィルターの設定
     dimension_filter = None
-    path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
-        
+    # path_filterがNoneでない場合のみ実行するよう修正すると、より安全です。
+    if path_filter:
+        path_list = [p.strip() for p in path_filter.split(',') if p.strip()]
+            
         if len(path_list) == 1:
             # 単一パス
             dimension_filter = FilterExpression(
@@ -151,10 +153,10 @@ def create_page_summary_request(property_id, start_date, end_date, path_filter=N
                     string_filter=Filter.StringFilter(
                         value=path_list[0],
                         match_type=Filter.StringFilter.MatchType.EXACT  # CONTAINSからEXACTに変更
-                        )
+                    )
                 )
             )
-        else:
+        elif len(path_list) > 1: # 複数パスの場合を明示的にするため `else` から `elif` に変更
             # 複数パス（OR条件）
             filters = []
             for path in path_list:
@@ -169,9 +171,7 @@ def create_page_summary_request(property_id, start_date, end_date, path_filter=N
                 ))
             dimension_filter = FilterExpression(
                 or_group=FilterExpressionList(expressions=filters)
-            )
-
-                        
+            )    
     
     return RunReportRequest(
         property=f"properties/{property_id}",
@@ -697,5 +697,4 @@ def execute_summary_requests_parallel(client, requests, max_workers=3):
     except Exception as e:
         logger.error(f"並列実行エラー: {str(e)}")
         return [None] * len(requests) 
-
 
